@@ -1,0 +1,27 @@
+{
+  "name": "js-privisioner",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dbus-next": "^0.8.2",
+    "prompts": "^2.3.2",
+    "random-bytes": "^1.0.0"
+  },
+  "devDependencies": {
+    "@babel/cli": "^7.8.4",
+    "@babel/core": "^7.9.0",
+    "@babel/plugin-proposal-class-properties": "^7.8.3",
+    "@babel/plugin-proposal-decorators": "^7.8.3",
+    "@babel/plugin-syntax-bigint": "^7.8.3",
+    "@babel/preset-env": "^7.9.5",
+    "babel-preset-latest-node": "^4.1.0",
+    "cli-interact": "^0.1.9"
+  }
+}
