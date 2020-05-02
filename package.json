@@ -12,7 +12,8 @@
   "dependencies": {
     "dbus-next": "^0.8.2",
     "prompts": "^2.3.2",
-    "random-bytes": "^1.0.0"
+    "random-bytes": "^1.0.0",
+    "struct": "0.0.12"
   },
   "devDependencies": {
     "@babel/cli": "^7.8.4",

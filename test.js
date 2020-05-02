@@ -1,6 +1,8 @@
 const dbus = require('dbus-next');
 const prompts = require('prompts');
 const randomBytes = require('random-bytes');
+const Struct = require('struct');
+
 const {
   Interface, property, method, signal, DBusError,
   ACCESS_READ, ACCESS_WRITE, ACCESS_READWRITE
@@ -122,6 +124,11 @@ class ProvisionerInterface extends Interface {
   @method({inSignature: 'ayqy'})
   AddNodeComplete(uuid, unicast, count) {
     console.log('AddNodeComplete', uuid, unicast, count);
+
+    provisioned[uuid] = {
+      unicast,
+      count,
+    }
   }
 
   @method({inSignature: 'ays'})
@@ -220,7 +227,7 @@ const main = async () => {
 
   const element0 = new ElementInterface('org.bluez.mesh.Element1');
   element0.Index = 0;
-  element0.Models = [0x0001];
+  element0.Models = [0x1001];
   element0.VendorModels = [];
 
   const root = new RootInterface('org.freedesktop.DBus.ObjectManager', {
@@ -237,7 +244,7 @@ const main = async () => {
 
   const token = await network.CreateNetwork(APP_PATH, uuid);
 
-  console.log('CreateNetwork successfull, token is', token);
+  console.log('CreateNetwork successful, token is', token);
   const uuidHex = bufferToHex(uuid);
   console.log(`Node UUID: ${uuidHex}`)
 
@@ -248,9 +255,59 @@ const main = async () => {
 
   const nodeObject = await bus.getProxyObject('org.bluez.mesh', `/org/bluez/mesh/node${uuidHex}`);
   management = await nodeObject.getInterface('org.bluez.mesh.Management1');
+  const node = await nodeObject.getInterface('org.bluez.mesh.Node1')
+
+  console.log('Importing AppKey');
+  const superKey = [51, 12, 46, 12, 89, 12, 68, 12,
+                    79, 146, 89, 144, 67, 24, 89, 111];
+
+  await management.ImportAppKey(0, 0, superKey);
+  const elementPath = `${APP_PATH}/ele00`;
+  await node.AddAppKey(elementPath, 0x0001, 0, 0, false);
 
   console.log('Starting unprovisioned scan');
   await management.UnprovisionedScan(5);
+
+  await prompts({
+    type: 'text',
+    name: 'meaning',
+    message: 'Type anything to send demo messages'
+  });
+
+  for (const {unicast} of Object.values(provisioned)) {
+    await node.AddAppKey(elementPath, unicast, 0, 0, false);
+    console.log('Added AppKey for ' + elementPath);
+
+    await prompts({
+      type: 'text',
+      name: 'meaning',
+      message: 'Type anything to send demo messages'
+    });
+
+    const bindStruct = Struct()
+      .word16Ube('opcode')
+      .word16Ube('element_addr')
+      .word16Ube('model_app_idx')
+      .word16Ube('model_id');
+
+    bindStruct.allocate();
+
+    const bindStructProxy = bindStruct.fields;
+    bindStructProxy.opcode = 0x803D;
+    bindStructProxy.element_addr = unicast;
+    bindStructProxy.model_app_idx = 0x0000;
+    bindStructProxy.model_id = 0x0001;
+
+    console.log(Array.from(bindStruct.buffer()));
+
+    await node.DevKeySend(elementPath, unicast, true, 0, Array.from(bindStruct.buffer()));
+
+    bindStructProxy.element_addr = unicast+1;
+    bindStructProxy.model_id = 0x0000;
+    await node.DevKeySend(elementPath, unicast, true, 0, Array.from(bindStruct.buffer()));
+    console.log('Bound AppKey');
+  }
+
 
   await prompts({
     type: 'text',
