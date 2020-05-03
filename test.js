@@ -8,7 +8,7 @@ const {
   ACCESS_READ, ACCESS_WRITE, ACCESS_READWRITE
 } = dbus.interface;
 
-let unicastAddress = 0x0010;
+let unicastAddress = 0x0002;
 
 let management;
 const provisioned = {};
@@ -17,6 +17,12 @@ function bufferToHex(buffer, length=16) {
   return [...new Uint8Array (buffer)]
     .map (b => b.toString(length).padStart (2, "0"))
     .join ("");
+}
+
+function toHexString(byteArray) {
+  return Array.from(byteArray, function(byte) {
+    return ('0' + (byte & 0xFF).toString(16)).slice(-2);
+  }).join('')
 }
 
 // dbus.setBigIntCompat(true);
@@ -199,14 +205,14 @@ class ElementInterface extends Interface {
   // @property({signature: 'q', access: ACCESS_READ})
   // Location;
 
-  @method({inSignature: 'qqbay'})
+  @method({inSignature: 'qqvay'})
   MessageReceived(source, key_index, subscription, data) {
     console.log('MessageReceived', source, key_index, subscription, data);
   }
 
-  @method({inSignature: 'qqay'})
-  DevKeyMessageReceived(source, net_index, data) {
-    console.log('DevKeyMessageReceived', source ,net_index, data);
+  @method({inSignature: 'qbqay'})
+  DevKeyMessageReceived(source, remote, net_index, data) {
+    console.log('DevKeyMessageReceived', source, net_index, toHexString(data));
   }
 
   @method({inSignature: 'q{sv}'})
@@ -269,26 +275,37 @@ const main = async () => {
   await management.UnprovisionedScan(5);
 
   await prompts({
-    type: 'text',
+    type: 'confirm',
     name: 'meaning',
-    message: 'Type anything to send demo messages'
+    message: 'Next step: get composition data?'
   });
 
   for (const {unicast} of Object.values(provisioned)) {
+
+    //get composition data page 0
+    await node.DevKeySend(elementPath, unicast, true, 0, [0x80, 0x08, 0x00]);
+    console.log('Sent composition data get request');
+
+    await prompts({
+      type: 'confirm',
+      name: 'meaning',
+      message: 'Next step: add app key'
+    });
+
     await node.AddAppKey(elementPath, unicast, 0, 0, false);
     console.log('Added AppKey for ' + elementPath);
 
     await prompts({
-      type: 'text',
+      type: 'confirm',
       name: 'meaning',
-      message: 'Type anything to send demo messages'
+      message: 'Next step: bind appkey to model'
     });
 
     const bindStruct = Struct()
       .word16Ube('opcode')
-      .word16Ube('element_addr')
+      .word16Ule('element_addr')
       .word16Ube('model_app_idx')
-      .word16Ube('model_id');
+      .word16Ule('model_id');
 
     bindStruct.allocate();
 
@@ -296,23 +313,28 @@ const main = async () => {
     bindStructProxy.opcode = 0x803D;
     bindStructProxy.element_addr = unicast;
     bindStructProxy.model_app_idx = 0x0000;
-    bindStructProxy.model_id = 0x0001;
+    bindStructProxy.model_id = 0x1000;
 
-    console.log(Array.from(bindStruct.buffer()));
+    console.log('sending', Array.from(bindStruct.buffer()));
 
-    await node.DevKeySend(elementPath, unicast, true, 0, Array.from(bindStruct.buffer()));
-
-    bindStructProxy.element_addr = unicast+1;
-    bindStructProxy.model_id = 0x0000;
     await node.DevKeySend(elementPath, unicast, true, 0, Array.from(bindStruct.buffer()));
     console.log('Bound AppKey');
+
+    await prompts({
+      type: 'confirm',
+      name: 'meaning',
+      message: 'Next step: send demo app key message'
+    });
+
+    await node.Send(elementPath, unicast, 0, [0x82, 0x03, 0x01, 0xfa]);
+    console.log('Generic on/off unacknowledged sent');
   }
 
 
   await prompts({
-    type: 'text',
+    type: 'confirm',
     name: 'meaning',
-    message: 'Type anything to left the network'
+    message: 'Next step: leave network'
   });
 
 
