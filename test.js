@@ -13,6 +13,12 @@ let unicastAddress = 0x0002;
 let management;
 const provisioned = {};
 
+let node;
+
+const APP_PATH = '/com/sp/jsprov';
+const elementPath = `${APP_PATH}/ele00`;
+const devSendReceiveCallbacks = {};
+
 function bufferToHex(buffer, length=16) {
   return [...new Uint8Array (buffer)]
     .map (b => b.toString(length).padStart (2, "0"))
@@ -25,8 +31,103 @@ function toHexString(byteArray) {
   }).join('')
 }
 
-// dbus.setBigIntCompat(true);
-const APP_PATH = '/com/sp/jsprov';
+const waitForDevReceive = (expectedCallback, timeout= 10000) => {
+  return new Promise((resolve, reject) => {
+    const callbackId = Math.round(Math.random() * 100000000);
+
+    const timeoutId = setTimeout(() => {
+      delete devSendReceiveCallbacks[callbackId];
+      reject(new Error('Waiting for dev receive timeout...'));
+    }, timeout);
+
+    devSendReceiveCallbacks[callbackId] = (source, remote, net_index, data) => {
+      if (expectedCallback(source, remote, net_index, data)) {
+        clearTimeout(timeoutId);
+        delete devSendReceiveCallbacks[callbackId];
+        resolve();
+      }
+    };
+  });
+}
+
+const devSendReceive = (address, data, expectedCallback, maxResend=5, timeout=5000) => {
+  return new Promise((resolve, reject) => {
+    let tries = 0;
+    const callbackId = Math.round(Math.random() * 100000000);
+
+    const resendInterval = setInterval(() => {
+      tries += 1;
+      if (tries > maxResend) {
+        clearInterval(resendInterval)
+        delete devSendReceiveCallbacks[callbackId];
+        return reject(new Error('Max number of resend attempts reached'));
+      }
+      console.warn('No expected answer, resend attempt #' + tries);
+      executeSend()
+        .catch(reject);
+    }, timeout);
+
+
+    const executeSend = () => {
+      return node.DevKeySend(elementPath, address, true, 0, data);
+    };
+
+    devSendReceiveCallbacks[callbackId] = (source, remote, net_index, data) => {
+      if (expectedCallback(source, remote, net_index, data)) {
+        clearInterval(resendInterval);
+        delete devSendReceiveCallbacks[callbackId];
+        resolve();
+      }
+    };
+
+    return executeSend()
+      .catch(reject);
+  });
+};
+
+
+const configureNode = async (uuid, address) => {
+  console.log('Configuring node ' + address);
+
+  //get composition data page 0
+  console.log('Sending composition data get request');
+  await devSendReceive(address, [0x80, 0x08, 0x00], (source, remote, net_index, data) => {
+    return data[0] === 0x02 && data[1] === 0x00;
+  });
+
+
+  console.log('Adding AppKey for ' + elementPath);
+  await node.AddAppKey(elementPath, address, 0, 0, false);
+  await waitForDevReceive((source, remote, net_index, data) => {
+    return data[0] === 0x80 && data[1] === 0x03;
+  });
+
+  const bindStruct = Struct()
+    .word16Ube('opcode')
+    .word16Ule('element_addr')
+    .word16Ube('model_app_idx')
+    .word16Ule('company_id')
+    .word16Ule('model_id');
+
+  bindStruct.allocate();
+  const bindStructProxy = bindStruct.fields;
+
+  bindStructProxy.opcode = 0x803D;
+  bindStructProxy.element_addr = address;
+  bindStructProxy.model_app_idx = 0x0000;
+  bindStructProxy.company_id = 0x02E5;
+  bindStructProxy.model_id = 0x00A2;
+
+  console.log('Sending binding command', Array.from(bindStruct.buffer()));
+
+  await devSendReceive(address, Array.from(bindStruct.buffer()), () => true);
+
+  console.log('Bound AppKey');
+
+  await node.Send(elementPath, address, 0, [0xc0, 0xE5, 0x02, 0x00]);
+  console.log('Vendor task GET sent');
+
+};
 
 class RootInterface extends Interface {
   constructor(name, childrenObjects) {
@@ -74,7 +175,7 @@ class RootInterface extends Interface {
 class ApplicationInterface extends Interface {
 
   @property({signature: 'q', access: ACCESS_READ})
-  CompanyID = 0x0EE5;
+  CompanyID = 0x02E5;
 
   @property({signature: 'q', access: ACCESS_READ})
   ProductID = 0x42;
@@ -135,6 +236,11 @@ class ProvisionerInterface extends Interface {
       unicast,
       count,
     }
+
+    configureNode(uuid, unicast)
+      .catch((error) => {
+        console.log('Could not configure node', error);
+      })
   }
 
   @method({inSignature: 'ays'})
@@ -213,6 +319,9 @@ class ElementInterface extends Interface {
   @method({inSignature: 'qbqay'})
   DevKeyMessageReceived(source, remote, net_index, data) {
     console.log('DevKeyMessageReceived', source, net_index, toHexString(data));
+    Object.values(devSendReceiveCallbacks).forEach((callback) => {
+      callback(source, remote, net_index, data);
+    })
   }
 
   @method({inSignature: 'q{sv}'})
@@ -234,7 +343,7 @@ const main = async () => {
   const element0 = new ElementInterface('org.bluez.mesh.Element1');
   element0.Index = 0;
   element0.Models = [0x1001];
-  element0.VendorModels = [];
+  element0.VendorModels = [[0x02E5, 0x00A1], [0x02E5, 0x00A2]];
 
   const root = new RootInterface('org.freedesktop.DBus.ObjectManager', {
     [`${APP_PATH}`]: [app, provisioner],
@@ -261,74 +370,26 @@ const main = async () => {
 
   const nodeObject = await bus.getProxyObject('org.bluez.mesh', `/org/bluez/mesh/node${uuidHex}`);
   management = await nodeObject.getInterface('org.bluez.mesh.Management1');
-  const node = await nodeObject.getInterface('org.bluez.mesh.Node1')
+  node = await nodeObject.getInterface('org.bluez.mesh.Node1')
 
   console.log('Importing AppKey');
   const superKey = [51, 12, 46, 12, 89, 12, 68, 12,
                     79, 146, 89, 144, 67, 24, 89, 111];
 
   await management.ImportAppKey(0, 0, superKey);
-  const elementPath = `${APP_PATH}/ele00`;
   await node.AddAppKey(elementPath, 0x0001, 0, 0, false);
+
+  // bindStructProxy.opcode = 0x803D;
+  // bindStructProxy.element_addr = 0x0001;
+  // bindStructProxy.model_app_idx = 0x0000;
+  // bindStructProxy.company_id = 0x02E5;
+  // bindStructProxy.model_id = 0x00A1;
+  //
+  // await node.DevKeySend(elementPath, 0x0001, false, 0, Array.from(bindStruct.buffer()));
+  // console.log('Bound local AppKey');
 
   console.log('Starting unprovisioned scan');
   await management.UnprovisionedScan(5);
-
-  await prompts({
-    type: 'confirm',
-    name: 'meaning',
-    message: 'Next step: get composition data?'
-  });
-
-  for (const {unicast} of Object.values(provisioned)) {
-
-    //get composition data page 0
-    await node.DevKeySend(elementPath, unicast, true, 0, [0x80, 0x08, 0x00]);
-    console.log('Sent composition data get request');
-
-    await prompts({
-      type: 'confirm',
-      name: 'meaning',
-      message: 'Next step: add app key'
-    });
-
-    await node.AddAppKey(elementPath, unicast, 0, 0, false);
-    console.log('Added AppKey for ' + elementPath);
-
-    await prompts({
-      type: 'confirm',
-      name: 'meaning',
-      message: 'Next step: bind appkey to model'
-    });
-
-    const bindStruct = Struct()
-      .word16Ube('opcode')
-      .word16Ule('element_addr')
-      .word16Ube('model_app_idx')
-      .word16Ule('model_id');
-
-    bindStruct.allocate();
-
-    const bindStructProxy = bindStruct.fields;
-    bindStructProxy.opcode = 0x803D;
-    bindStructProxy.element_addr = unicast;
-    bindStructProxy.model_app_idx = 0x0000;
-    bindStructProxy.model_id = 0x1000;
-
-    console.log('sending', Array.from(bindStruct.buffer()));
-
-    await node.DevKeySend(elementPath, unicast, true, 0, Array.from(bindStruct.buffer()));
-    console.log('Bound AppKey');
-
-    await prompts({
-      type: 'confirm',
-      name: 'meaning',
-      message: 'Next step: send demo app key message'
-    });
-
-    await node.Send(elementPath, unicast, 0, [0x82, 0x03, 0x01, 0xfa]);
-    console.log('Generic on/off unacknowledged sent');
-  }
 
 
   await prompts({
