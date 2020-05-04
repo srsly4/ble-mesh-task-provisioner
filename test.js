@@ -19,6 +19,15 @@ const APP_PATH = '/com/sp/jsprov';
 const elementPath = `${APP_PATH}/ele00`;
 const devSendReceiveCallbacks = {};
 
+const bindStruct = Struct()
+  .word16Ube('opcode')
+  .word16Ule('element_addr')
+  .word16Ube('model_app_idx')
+  .word16Ule('company_id')
+  .word16Ule('model_id');
+
+bindStruct.allocate();
+
 function bufferToHex(buffer, length=16) {
   return [...new Uint8Array (buffer)]
     .map (b => b.toString(length).padStart (2, "0"))
@@ -102,14 +111,7 @@ const configureNode = async (uuid, address) => {
     return data[0] === 0x80 && data[1] === 0x03;
   });
 
-  const bindStruct = Struct()
-    .word16Ube('opcode')
-    .word16Ule('element_addr')
-    .word16Ube('model_app_idx')
-    .word16Ule('company_id')
-    .word16Ule('model_id');
 
-  bindStruct.allocate();
   const bindStructProxy = bindStruct.fields;
 
   bindStructProxy.opcode = 0x803D;
@@ -377,16 +379,26 @@ const main = async () => {
                     79, 146, 89, 144, 67, 24, 89, 111];
 
   await management.ImportAppKey(0, 0, superKey);
+  console.log('Adding local app key');
   await node.AddAppKey(elementPath, 0x0001, 0, 0, false);
 
-  // bindStructProxy.opcode = 0x803D;
-  // bindStructProxy.element_addr = 0x0001;
-  // bindStructProxy.model_app_idx = 0x0000;
-  // bindStructProxy.company_id = 0x02E5;
-  // bindStructProxy.model_id = 0x00A1;
-  //
-  // await node.DevKeySend(elementPath, 0x0001, false, 0, Array.from(bindStruct.buffer()));
-  // console.log('Bound local AppKey');
+  // await waitForDevReceive((source, key_index, subscription, data) => {
+  //   return data[0] === 0x80 && data[1] === 0x3e;
+  // });
+
+  console.log('Binding local app key to vendor model');
+
+  const bindStructProxy = bindStruct.fields;
+
+  bindStructProxy.opcode = 0x803D;
+  bindStructProxy.element_addr = 0x0001;
+  bindStructProxy.model_app_idx = 0x0000;
+  bindStructProxy.company_id = 0x02E5;
+  bindStructProxy.model_id = 0x00A1;
+
+  await devSendReceive(0x0001, Array.from(bindStruct.buffer()), () => true);
+
+  console.log('Bound local AppKey');
 
   console.log('Starting unprovisioned scan');
   await management.UnprovisionedScan(5);
