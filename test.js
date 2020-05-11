@@ -28,6 +28,14 @@ const bindStruct = Struct()
 
 bindStruct.allocate();
 
+const enqueueStruct = Struct()
+  .word8('opcode')
+  .word16Ule('vendor_id')
+  .word8('func_code')
+  .word64Ule('time');
+
+enqueueStruct.allocate();
+
 function bufferToHex(buffer, length=16) {
   return [...new Uint8Array (buffer)]
     .map (b => b.toString(length).padStart (2, "0"))
@@ -126,8 +134,16 @@ const configureNode = async (uuid, address) => {
 
   console.log('Bound AppKey');
 
-  await node.Send(elementPath, address, 0, [0xc0, 0xE5, 0x02, 0x00]);
-  console.log('Vendor task GET sent');
+  // await node.Send(elementPath, address, 0, [0xc2, 0xE5, 0x02, 0xbb, 0x05]);
+  const enqueueStructProxy = enqueueStruct.fields;
+
+  enqueueStructProxy.opcode = 0xc2;
+  enqueueStructProxy.vendor_id = 0x02e5;
+  enqueueStructProxy.func_code = 0xbb;
+  enqueueStructProxy.time = 25000;
+
+  await node.Send(elementPath, address, 0, Array.from(enqueueStruct.buffer()));
+  console.log('Vendor task ENQUEUE sent');
 
 };
 
