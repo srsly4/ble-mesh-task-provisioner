@@ -36,6 +36,22 @@ const enqueueStruct = Struct()
 
 enqueueStruct.allocate();
 
+const timeBeaconStruct = Struct()
+  .word8('opcode')
+  .word16Ule('vendor_id')
+  .word64Ule('logic_rate')
+  .word64Ule('logic_time');
+
+timeBeaconStruct.allocate();
+
+const timeBeaconRecvStruct = Struct()
+  .word8('opcode')
+  .word16Ule('vendor_id')
+  .word64Ule('logic_rate')
+  .word64Ule('logic_time');
+
+timeBeaconRecvStruct.allocate();
+
 function bufferToHex(buffer, length=16) {
   return [...new Uint8Array (buffer)]
     .map (b => b.toString(length).padStart (2, "0"))
@@ -128,11 +144,19 @@ const configureNode = async (uuid, address) => {
   bindStructProxy.company_id = 0x02E5;
   bindStructProxy.model_id = 0x00A2;
 
-  console.log('Sending binding command', Array.from(bindStruct.buffer()));
+  await devSendReceive(address, Array.from(bindStruct.buffer()), () => true);
+
+  console.log('Bound AppKey0 to task vendor model');
+
+  bindStructProxy.opcode = 0x803D;
+  bindStructProxy.element_addr = address;
+  bindStructProxy.model_app_idx = 0x0000;
+  bindStructProxy.company_id = 0x02E5;
+  bindStructProxy.model_id = 0x00A4;
 
   await devSendReceive(address, Array.from(bindStruct.buffer()), () => true);
 
-  console.log('Bound AppKey');
+  console.log('Bound AppKey0 to time sync vendor model');
 
   // await node.Send(elementPath, address, 0, [0xc2, 0xE5, 0x02, 0xbb, 0x05]);
   const enqueueStructProxy = enqueueStruct.fields;
@@ -140,7 +164,7 @@ const configureNode = async (uuid, address) => {
   enqueueStructProxy.opcode = 0xc2;
   enqueueStructProxy.vendor_id = 0x02e5;
   enqueueStructProxy.func_code = 0xbb;
-  enqueueStructProxy.time = 25000;
+  enqueueStructProxy.time = Date.now() + 10000;
 
   await node.Send(elementPath, address, 0, Array.from(enqueueStruct.buffer()));
   console.log('Vendor task ENQUEUE sent');
@@ -331,6 +355,17 @@ class ElementInterface extends Interface {
 
   @method({inSignature: 'qqvay'})
   MessageReceived(source, key_index, subscription, data) {
+    if (source === 0x0001) {
+      return;
+    }
+
+    if (data.length === 19) {
+      timeBeaconRecvStruct._setBuff(Buffer.from(data))
+      console.log(`Got time from ${source} - rate: ${timeBeaconRecvStruct.get('logic_time')}, logic time: ${timeBeaconRecvStruct.get('logic_ratio')}`)
+
+      return;
+    }
+
     console.log('MessageReceived', source, key_index, subscription, data);
   }
 
@@ -361,7 +396,7 @@ const main = async () => {
   const element0 = new ElementInterface('org.bluez.mesh.Element1');
   element0.Index = 0;
   element0.Models = [0x1001];
-  element0.VendorModels = [[0x02E5, 0x00A1], [0x02E5, 0x00A2]];
+  element0.VendorModels = [[0x02E5, 0x00A1], [0x02E5, 0x00A2], [0x02E5, 0x00A3], [0x02E5, 0x00A4]];
 
   const root = new RootInterface('org.freedesktop.DBus.ObjectManager', {
     [`${APP_PATH}`]: [app, provisioner],
@@ -404,6 +439,8 @@ const main = async () => {
 
   console.log('Binding local app key to vendor model');
 
+
+  // bind tasks model
   const bindStructProxy = bindStruct.fields;
 
   bindStructProxy.opcode = 0x803D;
@@ -414,11 +451,35 @@ const main = async () => {
 
   await devSendReceive(0x0001, Array.from(bindStruct.buffer()), () => true);
 
+  // bind time sync model
+
+  bindStructProxy.opcode = 0x803D;
+  bindStructProxy.element_addr = 0x0001;
+  bindStructProxy.model_app_idx = 0x0000;
+  bindStructProxy.company_id = 0x02E5;
+  bindStructProxy.model_id = 0x00A3;
+
+  await devSendReceive(0x0001, Array.from(bindStruct.buffer()), () => true);
+
   console.log('Bound local AppKey');
 
-  console.log('Starting unprovisioned scan');
-  await management.UnprovisionedScan(5);
+  console.log('Starting sending time beacons');
 
+  const timeBeacon = timeBeaconStruct.fields;
+  timeBeacon.opcode = 0xd0;
+  timeBeacon.vendor_id = 0x02e5;
+
+  setInterval(() => {
+    timeBeacon.logic_rate = 1000;
+    timeBeacon.logic_time = Date.now();
+
+    node.Send(elementPath, 0xFFFF, 0, Array.from(timeBeaconStruct.buffer()));
+  }, 5000);
+
+
+  console.log('Starting unprovisioned scan');
+
+  await management.UnprovisionedScan(5);
 
   await prompts({
     type: 'confirm',
