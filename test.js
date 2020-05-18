@@ -1,3 +1,4 @@
+const WebSocket = require('ws');
 const dbus = require('dbus-next');
 const prompts = require('prompts');
 const randomBytes = require('random-bytes');
@@ -11,6 +12,10 @@ const {
 let unicastAddress = 0x0002;
 
 let management;
+let network;
+let token;
+let client;
+let firstConfigured = true;
 const provisioned = {};
 
 let node;
@@ -51,6 +56,25 @@ const timeBeaconRecvStruct = Struct()
   .word64Ule('logic_time');
 
 timeBeaconRecvStruct.allocate();
+
+const sendData = (id, data={}) => {
+  if (!client) {
+    console.warn('No client to send data');
+    return;
+  }
+  try {
+    client.send(JSON.stringify({
+      id,
+      ...data,
+    }));
+  } catch (e) {
+    console.error('Could not send data to client', id, e);
+  }
+}
+
+const sendLog = (log) => {
+  sendData('log', {log});
+}
 
 function bufferToHex(buffer, length=16) {
   return [...new Uint8Array (buffer)]
@@ -158,17 +182,38 @@ const configureNode = async (uuid, address) => {
 
   console.log('Bound AppKey0 to time sync vendor model');
 
+  sendLog(`Node ${address} configured`);
+  sendData('nodeAdded', {
+    address,
+    uuid,
+  })
+
   // await node.Send(elementPath, address, 0, [0xc2, 0xE5, 0x02, 0xbb, 0x05]);
-  const enqueueStructProxy = enqueueStruct.fields;
+  // const enqueueStructProxy = enqueueStruct.fields;
+  //
+  // enqueueStructProxy.opcode = 0xc2;
+  // enqueueStructProxy.vendor_id = 0x02e5;
+  // enqueueStructProxy.func_code = 0xbb;
+  // enqueueStructProxy.time = Date.now() + 10000;
+  //
+  // await node.Send(elementPath, address, 0, Array.from(enqueueStruct.buffer()));
+  // console.log('Vendor task ENQUEUE sent');
 
-  enqueueStructProxy.opcode = 0xc2;
-  enqueueStructProxy.vendor_id = 0x02e5;
-  enqueueStructProxy.func_code = 0xbb;
-  enqueueStructProxy.time = Date.now() + 10000;
+  if (firstConfigured) {
+    firstConfigured = false;
+    console.log('Starting sending time beacons');
 
-  await node.Send(elementPath, address, 0, Array.from(enqueueStruct.buffer()));
-  console.log('Vendor task ENQUEUE sent');
+    const timeBeacon = timeBeaconStruct.fields;
+    timeBeacon.opcode = 0xd0;
+    timeBeacon.vendor_id = 0x02e5;
 
+    setInterval(() => {
+      timeBeacon.logic_rate = 1000;
+      timeBeacon.logic_time = Date.now();
+
+      node.Send(elementPath, 0xFFFF, 0, Array.from(timeBeaconStruct.buffer()));
+    }, 5000);
+  }
 };
 
 class RootInterface extends Interface {
@@ -245,6 +290,7 @@ class ProvisionerInterface extends Interface {
   ScanResult(rssi, data) {
     const uuid = bufferToHex(data.slice(0, 16));
     console.log(`Found device with UUID: ${uuid}, RSSI: ${rssi}`);
+    sendLog(`Found device with UUID: ${uuid}, RSSI: ${rssi}`);
     if (!management) {
       console.warn('No management object! Ignoring');
       return;
@@ -387,7 +433,7 @@ const main = async () => {
   const bus = dbus.systemBus();
   const mainObject = await bus.getProxyObject('org.bluez.mesh', '/org/bluez/mesh');
 
-  const network = await mainObject.getInterface('org.bluez.mesh.Network1');
+  network = await mainObject.getInterface('org.bluez.mesh.Network1');
 
   const app = new ApplicationInterface('org.bluez.mesh.Application1');
   const provisionAgent = new ProvisionAgentInterface('org.bluez.mesh.ProvisionAgent1');
@@ -410,7 +456,7 @@ const main = async () => {
   const uuid = Array.from(Uint8Array.from(randomBytes.sync(16)));
   console.log(uuid);
 
-  const token = await network.CreateNetwork(APP_PATH, uuid);
+  token = await network.CreateNetwork(APP_PATH, uuid);
 
   console.log('CreateNetwork successful, token is', token);
   const uuidHex = bufferToHex(uuid);
@@ -463,38 +509,54 @@ const main = async () => {
 
   console.log('Bound local AppKey');
 
-  console.log('Starting sending time beacons');
+  const wss = new WebSocket.Server({ port: 8080 });
 
-  const timeBeacon = timeBeaconStruct.fields;
-  timeBeacon.opcode = 0xd0;
-  timeBeacon.vendor_id = 0x02e5;
+  wss.on('connection', (ws) => {
+    client = ws;
+    ws.on('message', (message) =>  {
+      try {
+        const data = JSON.parse(message);
 
-  setInterval(() => {
-    timeBeacon.logic_rate = 1000;
-    timeBeacon.logic_time = Date.now();
+        switch (data.id) {
+          case 'scan':
+            console.log('Starting unprovisioned scan');
+            management.UnprovisionedScan(5);
+            sendLog('Started unprovisioned scan for 5 seconds');
+            break;
+        }
 
-    node.Send(elementPath, 0xFFFF, 0, Array.from(timeBeaconStruct.buffer()));
-  }, 5000);
+      } catch (e) {
+        console.warn('Could not parse WS message', e);
+      }
+    });
 
-
-  console.log('Starting unprovisioned scan');
-
-  await management.UnprovisionedScan(5);
-
-  await prompts({
-    type: 'confirm',
-    name: 'meaning',
-    message: 'Next step: leave network'
+    // ws.send('something');
   });
-
-
-  await network.Leave(token);
-  console.log('Left network');
 };
 
-main().then(() => {
-  console.log('App ended');
+const onExit = () => {
+  if (network) {
+    try {
+      network.Leave(token);
+    } catch (e) {
+      console.error('Could not left network', e)
+    }
+  }
+  console.log('Left network');
   process.exit(0);
+}
+
+process.once('SIGINT', function (code) {
+  console.log('SIGINT received...');
+  onExit();
+});
+
+process.once('SIGTERM', function (code) {
+  console.log('SIGTERM received...');
+  onExit();
+});
+
+main().then(() => {
 }).catch((error) => {
   console.error('An error occurred', error);
   process.exit(1);
