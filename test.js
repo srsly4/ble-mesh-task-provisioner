@@ -147,10 +147,10 @@ const configureNode = async (uuid, address) => {
   console.log('Configuring node ' + address);
 
   //get composition data page 0
-  console.log('Sending composition data get request');
-  await devSendReceive(address, [0x80, 0x08, 0x00], (source, remote, net_index, data) => {
-    return data[0] === 0x02 && data[1] === 0x00;
-  });
+  // console.log('Sending composition data get request');
+  // await devSendReceive(address, [0x80, 0x08, 0x00], (source, remote, net_index, data) => {
+  //   return data[0] === 0x02 && data[1] === 0x00;
+  // });
 
 
   console.log('Adding AppKey for ' + elementPath);
@@ -522,6 +522,30 @@ const main = async () => {
             console.log('Starting unprovisioned scan');
             management.UnprovisionedScan(5);
             sendLog('Started unprovisioned scan for 5 seconds');
+            break;
+          case 'nodeDelete':
+            console.log('Deleting node with address', data.address);
+            management.DeleteRemoteNode(data.address, 1);
+            sendLog('Deleted node with address ' + data.address);
+            sendData('nodeDeleted', {address: data.address});
+            break;
+          case 'taskAdd':
+            console.log('Enqueuing task', data);
+
+            const enqueueStructProxy = enqueueStruct.fields;
+
+            enqueueStructProxy.opcode = 0xc2;
+            enqueueStructProxy.vendor_id = 0x02e5;
+            enqueueStructProxy.func_code = data.funcCode;
+            enqueueStructProxy.time = data.timestamp;
+
+            node.Send(elementPath, data.address, 0, Array.from(enqueueStruct.buffer()));
+            console.log('Vendor task ENQUEUE sent');
+            sendData('taskAdded', {
+              timestamp: data.timestamp,
+              funcCode: data.funcCode,
+              address: data.address
+            });
             break;
         }
 
