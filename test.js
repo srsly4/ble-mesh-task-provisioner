@@ -16,6 +16,7 @@ let network;
 let token;
 let client;
 let firstConfigured = true;
+let taskId = 1;
 const provisioned = {};
 
 let node;
@@ -36,6 +37,7 @@ bindStruct.allocate();
 const enqueueStruct = Struct()
   .word8('opcode')
   .word16Ule('vendor_id')
+  .word16Ule('tid')
   .word8('func_code')
   .word64Ule('time');
 
@@ -44,16 +46,18 @@ enqueueStruct.allocate();
 const timeBeaconStruct = Struct()
   .word8('opcode')
   .word16Ule('vendor_id')
-  .word64Ule('logic_rate')
-  .word64Ule('logic_time');
+  .doublele('rate')
+  .doublele('logic_time')
+  .doublele('hardware_time');
 
 timeBeaconStruct.allocate();
 
 const timeBeaconRecvStruct = Struct()
   .word8('opcode')
   .word16Ule('vendor_id')
-  .word64Ule('logic_rate')
-  .word64Ule('logic_time');
+  .doublele('rate')
+  .doublele('logic_time')
+  .doublele('hardware_time');
 
 timeBeaconRecvStruct.allocate();
 
@@ -208,8 +212,9 @@ const configureNode = async (uuid, address) => {
     timeBeacon.vendor_id = 0x02e5;
 
     setInterval(() => {
-      timeBeacon.logic_rate = 1000;
+      timeBeacon.rate = 0.0;
       timeBeacon.logic_time = Date.now();
+      timeBeacon.hardware_time = Date.now();
 
       node.Send(elementPath, 0xFFFF, 0, Array.from(timeBeaconStruct.buffer()));
     }, 5000);
@@ -405,9 +410,19 @@ class ElementInterface extends Interface {
       return;
     }
 
-    if (data.length === 19) {
-      timeBeaconRecvStruct._setBuff(Buffer.from(data))
-      console.log(`Got time from ${source} - rate: ${timeBeaconRecvStruct.get('logic_time')}, logic time: ${timeBeaconRecvStruct.get('logic_ratio')}`)
+    if (data.length === 27) {
+      try {
+        timeBeaconRecvStruct._setBuff(Buffer.from(data))
+        console.log(`Got time from ${source} - time: ${timeBeaconRecvStruct.get('logic_time')}, rate: ${timeBeaconRecvStruct.get('rate')}`)
+        sendData('nodeTime', {
+          address: source,
+          logicTime: timeBeaconRecvStruct.get('logic_time'),
+          recvTime: Date.now(),
+          logicRate: timeBeaconRecvStruct.get('rate'),
+        })
+      } catch (e) {
+        console.log(e);
+      }
 
       return;
     }
@@ -536,6 +551,7 @@ const main = async () => {
 
             enqueueStructProxy.opcode = 0xc2;
             enqueueStructProxy.vendor_id = 0x02e5;
+            enqueueStructProxy.tid = taskId;
             enqueueStructProxy.func_code = data.funcCode;
             enqueueStructProxy.time = data.timestamp;
 
@@ -544,8 +560,10 @@ const main = async () => {
             sendData('taskAdded', {
               timestamp: data.timestamp,
               funcCode: data.funcCode,
-              address: data.address
+              address: data.address,
+              taskId,
             });
+            taskId++;
             break;
         }
 
