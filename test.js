@@ -17,7 +17,12 @@ let token;
 let client;
 let firstConfigured = true;
 let taskId = 1;
+let timeBeaconEnabled = true;
+let localLogicRate = 0.0;
+
 const provisioned = {};
+
+const beaconMap = {};
 
 let node;
 
@@ -46,20 +51,36 @@ enqueueStruct.allocate();
 const timeBeaconStruct = Struct()
   .word8('opcode')
   .word16Ule('vendor_id')
-  .doublele('rate')
-  .doublele('logic_time')
-  .doublele('hardware_time');
+  .word16Ule('logic_time_high')
+  .word32Ule('logic_time_low')
+  .word16Ule('hardware_time');
 
 timeBeaconStruct.allocate();
 
 const timeBeaconRecvStruct = Struct()
   .word8('opcode')
   .word16Ule('vendor_id')
-  .doublele('rate')
-  .doublele('logic_time')
-  .doublele('hardware_time');
+  .word16Ule('logic_time_high')
+  .word32Ule('logic_time_low')
+  .word16Ule('hardware_time');
 
 timeBeaconRecvStruct.allocate();
+
+const driftBeaconStruct = Struct()
+  .word8('opcode')
+  .word16Ule('vendor_id')
+  .word32Sle('logic_rate')
+  .word16Ule('hardware_time');
+
+driftBeaconStruct.allocate();
+
+const driftBeaconStructRecv = Struct()
+  .word8('opcode')
+  .word16Ule('vendor_id')
+  .word32Sle('logic_rate')
+  .word16Ule('hardware_time');
+
+driftBeaconStructRecv.allocate();
 
 const sendData = (id, data={}) => {
   if (!client) {
@@ -208,15 +229,49 @@ const configureNode = async (uuid, address) => {
     console.log('Starting sending time beacons');
 
     const timeBeacon = timeBeaconStruct.fields;
-    timeBeacon.opcode = 0xd0;
+    timeBeacon.opcode = 0xc5;
     timeBeacon.vendor_id = 0x02e5;
 
+    const driftBeacon = driftBeaconStruct.fields;
+    driftBeacon.opcode = 0xc6;
+    driftBeacon.vendor_id = 0x02e5
+
     setInterval(() => {
-      timeBeacon.rate = 0.0;
-      timeBeacon.logic_time = Date.now();
-      timeBeacon.hardware_time = Date.now();
+      if (!timeBeaconEnabled) {
+        return;
+      }
+
+      // update logic drift
+      let logicDrift = localLogicRate;
+      let neighbourCount = 0;
+
+      Object.values(beaconMap).forEach((beacon) => {
+        if (!beacon.read) {
+          logicDrift += beacon.relativeLogicRate;
+          neighbourCount += 1;
+        }
+      })
+
+      localLogicRate = logicDrift / (neighbourCount + 1);
+
+      const logic_time = BigInt(Date.now());
+      const low = Number(logic_time & BigInt(0xFFFFFFFF));
+      const high = Number(logic_time >> 32n);
+
+      console.log('Broadcasting time ' + Number(logic_time), low, high);
+      timeBeacon.logic_time_low = low;
+      timeBeacon.logic_time_high = high;
+      timeBeacon.hardware_time = Date.now() & 0xFFFF;
 
       node.Send(elementPath, 0xFFFF, 0, Array.from(timeBeaconStruct.buffer()));
+
+      setTimeout(() => {
+        console.log('Broadcasting drift ' + localLogicRate);
+        driftBeacon.logic_rate = Math.round(localLogicRate * 2147483647.0);
+        driftBeacon.hardware_time = Date.now() & 0xFFFF;
+
+        node.Send(elementPath, 0xFFFF, 0, Array.from(driftBeaconStruct.buffer()));
+      }, 1000);
     }, 5000);
   }
 };
@@ -410,21 +465,71 @@ class ElementInterface extends Interface {
       return;
     }
 
-    if (data.length === 27) {
+    if (data.length === 11) {
       try {
         timeBeaconRecvStruct._setBuff(Buffer.from(data))
-        console.log(`Got time from ${source} - time: ${timeBeaconRecvStruct.get('logic_time')}, rate: ${timeBeaconRecvStruct.get('rate')}`)
+
+        const logicTime = timeBeaconRecvStruct.get('logic_time_low') + Number((BigInt(timeBeaconRecvStruct.get('logic_time_high')) << 32n));
+        console.log(`Got time from ${source} - time: ${logicTime}`);
+
         sendData('nodeTime', {
           address: source,
-          logicTime: timeBeaconRecvStruct.get('logic_time'),
+          logicTime: logicTime,
           recvTime: Date.now(),
-          logicRate: timeBeaconRecvStruct.get('rate'),
         })
       } catch (e) {
         console.log(e);
       }
 
       return;
+    }
+
+    if (data.length === 9) {
+      try {
+        driftBeaconStructRecv._setBuff(Buffer.from(data));
+
+        let remoteLogicRate = driftBeaconStructRecv.get('logic_rate')/2147483647.0;
+        const remoteHardwareTime = driftBeaconStructRecv.get('hardware_time');
+
+        if (!beaconMap[source]) {
+          beaconMap[source] = {
+            remoteLogicRate,
+            remoteHardwareTime,
+            localHardwareTime: Date.now(),
+            relativeLogicRate: localLogicRate*remoteLogicRate,
+            read: false,
+          };
+          console.log(`Got first drift beacon from node ${source}`);
+          return;
+        }
+
+        const localHardwareTime = Date.now();
+
+        const remoteHardwareTimeDiff = (remoteHardwareTime - beaconMap[source].remoteHardwareTime) % 65536;
+        const localHardwareTimeDiff = localHardwareTime - beaconMap[source].localHardwareTime;
+        console.log('remoteHardwareTimeDiff: ', remoteHardwareTimeDiff);
+
+        const current_rate = remoteHardwareTimeDiff / localHardwareTimeDiff;
+        console.log('current_rate: ', current_rate);
+
+        let relativeLogicRate = current_rate*remoteLogicRate;
+        if (relativeLogicRate > 0.1) {
+          relativeLogicRate = 0.1;
+        }
+        if (relativeLogicRate < -0.1) {
+          relativeLogicRate = -0.1;
+        }
+
+        beaconMap[source] = {
+          remoteLogicRate,
+          remoteHardwareTime,
+          localHardwareTime,
+          relativeLogicRate,
+          read: false,
+        }
+      } catch (e) {
+        console.log(e);
+      }
     }
 
     console.log('MessageReceived', source, key_index, subscription, data);
@@ -533,6 +638,10 @@ const main = async () => {
         const data = JSON.parse(message);
 
         switch (data.id) {
+          case 'setTimeBeacon':
+            console.log('Setting timeBeaconEnabled to ' + data.enabled);
+            timeBeaconEnabled = Boolean(data.enabled);
+            break;
           case 'scan':
             console.log('Starting unprovisioned scan');
             management.UnprovisionedScan(5);
