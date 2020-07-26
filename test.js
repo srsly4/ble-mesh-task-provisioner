@@ -82,6 +82,12 @@ const driftBeaconStructRecv = Struct()
 
 driftBeaconStructRecv.allocate();
 
+const otaUpdateStruct = Struct()
+  .word8('opcode')
+  .word16Ule('vendor_id');
+
+otaUpdateStruct.allocate();
+
 const sendData = (id, data={}) => {
   if (!client) {
     console.warn('No client to send data');
@@ -206,6 +212,16 @@ const configureNode = async (uuid, address) => {
   await devSendReceive(address, Array.from(bindStruct.buffer()), () => true);
 
   console.log('Bound AppKey0 to time sync vendor model');
+
+  bindStructProxy.opcode = 0x803D;
+  bindStructProxy.element_addr = address;
+  bindStructProxy.model_app_idx = 0x0000;
+  bindStructProxy.company_id = 0x02E5;
+  bindStructProxy.model_id = 0x00A6;
+
+  await devSendReceive(address, Array.from(bindStruct.buffer()), () => true);
+
+  console.log('Bound AppKey0 to OTA vendor model');
 
   sendLog(`Node ${address} configured`);
   sendData('nodeAdded', {
@@ -470,11 +486,11 @@ class ElementInterface extends Interface {
         timeBeaconRecvStruct._setBuff(Buffer.from(data))
 
         const logicTime = timeBeaconRecvStruct.get('logic_time_low') + Number((BigInt(timeBeaconRecvStruct.get('logic_time_high')) << 32n));
-        console.log(`Got time from ${source} - time: ${logicTime}`);
+        console.log(`Got time from ${source} - time: ${logicTime+20}`);
 
         sendData('nodeTime', {
           address: source,
-          logicTime: logicTime,
+          logicTime: logicTime+20,
           recvTime: Date.now(),
         })
       } catch (e) {
@@ -562,7 +578,7 @@ const main = async () => {
   const element0 = new ElementInterface('org.bluez.mesh.Element1');
   element0.Index = 0;
   element0.Models = [0x1001];
-  element0.VendorModels = [[0x02E5, 0x00A1], [0x02E5, 0x00A2], [0x02E5, 0x00A3], [0x02E5, 0x00A4]];
+  element0.VendorModels = [[0x02E5, 0x00A1], [0x02E5, 0x00A2], [0x02E5, 0x00A3], [0x02E5, 0x00A4], [0x02E5, 0x00A5], [0x02E5, 0x00A6]];
 
   const root = new RootInterface('org.freedesktop.DBus.ObjectManager', {
     [`${APP_PATH}`]: [app, provisioner],
@@ -627,6 +643,16 @@ const main = async () => {
 
   await devSendReceive(0x0001, Array.from(bindStruct.buffer()), () => true);
 
+  // bind ota model
+
+  bindStructProxy.opcode = 0x803D;
+  bindStructProxy.element_addr = 0x0001;
+  bindStructProxy.model_app_idx = 0x0000;
+  bindStructProxy.company_id = 0x02E5;
+  bindStructProxy.model_id = 0x00A5;
+
+  await devSendReceive(0x0001, Array.from(bindStruct.buffer()), () => true);
+
   console.log('Bound local AppKey');
 
   const wss = new WebSocket.Server({ port: 8080 });
@@ -673,6 +699,14 @@ const main = async () => {
               taskId,
             });
             taskId++;
+            break;
+          case 'otaUpdate':
+            console.log('Sending OTA update message', data);
+            const otaUpdateStructProxy = otaUpdateStruct.fields;
+            otaUpdateStructProxy.opcode = 0xc7;
+            otaUpdateStructProxy.vendor_id = 0x02e5;
+
+            node.Send(elementPath, data.address, 0, Array.from(otaUpdateStruct.buffer()));
             break;
         }
 
