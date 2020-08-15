@@ -5,6 +5,9 @@ const randomBytes = require('random-bytes');
 const Struct = require('struct');
 const fs = require('fs');
 
+// noinspection ES6UnusedImports
+import regeneratorRuntime from "regenerator-runtime";
+
 const {
   Interface, property, method, signal, DBusError,
   ACCESS_READ, ACCESS_WRITE, ACCESS_READWRITE
@@ -428,7 +431,6 @@ class ProvisionerInterface extends Interface {
   AddNodeFailed(uuid, reason) {
     console.log('AddNodeFailed', uuid, reason);
   }
-
 }
 
 class ProvisionAgentInterface extends Interface {
