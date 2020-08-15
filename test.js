@@ -3,6 +3,7 @@ const dbus = require('dbus-next');
 const prompts = require('prompts');
 const randomBytes = require('random-bytes');
 const Struct = require('struct');
+const fs = require('fs');
 
 const {
   Interface, property, method, signal, DBusError,
@@ -176,6 +177,7 @@ const devSendReceive = (address, data, expectedCallback, maxResend=5, timeout=50
 
 const configureNode = async (uuid, address) => {
   console.log('Configuring node ' + address);
+  const startDate = Date.now();
 
   //get composition data page 0
   // console.log('Sending composition data get request');
@@ -220,6 +222,15 @@ const configureNode = async (uuid, address) => {
   bindStructProxy.model_id = 0x00A6;
 
   await devSendReceive(address, Array.from(bindStruct.buffer()), () => true);
+
+  const endDate = Date.now();
+  const provisionStartTime = provisioned[uuid].provisionStartTime;
+  const rssi = provisioned[uuid].rssi;
+  fs.appendFile('provision_times.csv',
+    `${String(endDate - provisionStartTime)},${String(endDate - startDate)},${String(rssi)}\n`, (err) => {
+    if (err)
+      console.warn('Could not log provision time', err);
+  })
 
   console.log('Bound AppKey0 to OTA vendor model');
 
@@ -372,8 +383,12 @@ class ProvisionerInterface extends Interface {
       return;
     }
 
-    if (!provisioned[uuid]) {
+    if (!provisioned[String(uuid)]) {
       console.log('New device! Provisioning...');
+      provisioned[String(uuid)] = {
+        provisionStartTime: Date.now(),
+        rssi,
+      };
       (async () => {
         await management.AddNode(data.slice(0, 16))
         console.log('AddNode successfully');
@@ -394,14 +409,16 @@ class ProvisionerInterface extends Interface {
 
   @method({inSignature: 'ayqy'})
   AddNodeComplete(uuid, unicast, count) {
-    console.log('AddNodeComplete', uuid, unicast, count);
+    console.log('AddNodeComplete', uuid, unicast, count, provisioned[uuid]);
 
-    provisioned[uuid] = {
+    const uuidHex = bufferToHex(uuid.slice(0, 16));
+    provisioned[uuidHex] = {
+      ...provisioned[uuidHex],
       unicast,
       count,
     }
 
-    configureNode(uuid, unicast)
+    configureNode(uuidHex, unicast)
       .catch((error) => {
         console.log('Could not configure node', error);
       })
