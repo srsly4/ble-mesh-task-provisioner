@@ -52,6 +52,15 @@ const enqueueStruct = Struct()
 
 enqueueStruct.allocate();
 
+const execAckStruct = Struct()
+    .word8('opcode')
+    .word16Ule('vendor_id')
+    .word16Ule('tid')
+    .word8Ule('data_len')
+    .word32Ule('adc');
+
+execAckStruct.allocate();
+
 const timeBeaconStruct = Struct()
   .word8('opcode')
   .word16Ule('vendor_id')
@@ -500,6 +509,25 @@ class ElementInterface extends Interface {
       return;
     }
 
+    if (data.length === 10) {
+      try {
+        execAckStruct._setBuff(Buffer.from(data));
+        const tid = execAckStruct.get('tid');
+        const adc = execAckStruct.get('adc');
+        console.log('Got ack for task exec with tid:', tid);
+        console.log('Measured ADC value: ' + adc);
+
+        fs.appendFile('adc_measurements.csv',
+            `${tid},${source},${adc}\n`, (err) => {
+              if (err)
+                console.warn('Could not log adc value', err);
+            })
+
+      } catch (e) {
+        console.warn(e);
+      }
+    }
+
     if (data.length === 11) {
       try {
         timeBeaconRecvStruct._setBuff(Buffer.from(data))
@@ -548,11 +576,11 @@ class ElementInterface extends Interface {
         console.log('current_rate: ', current_rate);
 
         let relativeLogicRate = current_rate*remoteLogicRate;
-        if (relativeLogicRate > 0.1) {
-          relativeLogicRate = 0.1;
+        if (relativeLogicRate > 3.3e-8) {
+          relativeLogicRate = 3.3e-8;
         }
-        if (relativeLogicRate < -0.1) {
-          relativeLogicRate = -0.1;
+        if (relativeLogicRate < -3.3e-8) {
+          relativeLogicRate = -3.3e-8;
         }
 
         beaconMap[source] = {
