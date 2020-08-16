@@ -535,11 +535,18 @@ class ElementInterface extends Interface {
         const logicTime = timeBeaconRecvStruct.get('logic_time_low') + Number((BigInt(timeBeaconRecvStruct.get('logic_time_high')) << 32n));
         console.log(`Got time from ${source} - time: ${logicTime+20}`);
 
+        const now = Date.now();
+
         sendData('nodeTime', {
           address: source,
           logicTime: logicTime+20,
-          recvTime: Date.now(),
+          recvTime: now,
         })
+        fs.appendFile(`node_${source}_times.csv`,
+            `${now},${now-(logicTime+20)}\n`, (err) => {
+            if (err)
+              console.warn('Could not log node time value', err);
+        });
       } catch (e) {
         console.log(e);
       }
@@ -554,6 +561,12 @@ class ElementInterface extends Interface {
         let remoteLogicRate = driftBeaconStructRecv.get('logic_rate')/2147483647.0;
         const remoteHardwareTime = driftBeaconStructRecv.get('hardware_time');
 
+        fs.appendFile(`node_${source}_rates.csv`,
+        `${Date.now()},${remoteLogicRate}\n`, (err) => {
+          if (err)
+            console.warn('Could not log node time value', err);
+        });
+
         if (!beaconMap[source]) {
           beaconMap[source] = {
             remoteLogicRate,
@@ -566,11 +579,21 @@ class ElementInterface extends Interface {
           return;
         }
 
+
         const localHardwareTime = Date.now();
 
-        const remoteHardwareTimeDiff = (remoteHardwareTime - beaconMap[source].remoteHardwareTime) % 65536;
+        let remoteHardwareTimeDiff = (remoteHardwareTime - beaconMap[source].remoteHardwareTime) % 65536;
+        if (remoteHardwareTimeDiff < 0) {
+          remoteHardwareTimeDiff += 65536;
+        }
         const localHardwareTimeDiff = localHardwareTime - beaconMap[source].localHardwareTime;
         console.log('remoteHardwareTimeDiff: ', remoteHardwareTimeDiff);
+
+        fs.appendFile(`node_${source}_diffs.csv`,
+            `${Date.now()},${remoteHardwareTimeDiff},${localHardwareTimeDiff}\n`, (err) => {
+              if (err)
+                console.warn('Could not log node time value', err);
+            });
 
         const current_rate = remoteHardwareTimeDiff / localHardwareTimeDiff;
         console.log('current_rate: ', current_rate);
